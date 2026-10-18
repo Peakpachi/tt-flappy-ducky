@@ -252,17 +252,14 @@ module game_core (
     wire pipe_hit = (in_p1x && ((y < gap1_10) || (y >= pipe1_gap_bot))) ||
                     (in_p2x && ((y < gap2_10) || (y >= pipe2_gap_bot)));
 
-    // 8. Shared glyph renderer (Score digits + ":(" )
+    // 8. Shared glyph renderer (Score digits ONLY)
     wire in_srow   = (y >= 10'd32) && (y < 10'd72);
     wire in_tens   = in_srow && (x >= 10'd292) && (x < 10'd316);
     wire in_ones   = in_srow && (x >= 10'd324) && (x < 10'd348);
     wire in_h_tens = in_srow && (x >= 10'd560) && (x < 10'd584);
     wire in_h_ones = in_srow && (x >= 10'd592) && (x < 10'd616);
-    wire in_sad    = game_over && (x >= 10'd288) && (x < 10'd352) && (y >= 10'd224) && (y < 10'd264);
-    wire is_colon  = (x < 10'd320);
 
-    wire [3:0] dig = in_tens ? score_tens : in_ones ? score_ones : in_h_tens ? h_score_tens : h_score_ones;
-    wire [3:0] glyph = in_sad ? (is_colon ? 4'd10 : 4'd11) : dig;
+    wire [3:0] glyph = in_tens ? score_tens : in_ones ? score_ones : in_h_tens ? h_score_tens : h_score_ones;
 
     // Truth-table logic minimizes beautifully compared to a ROM array
     reg [14:0] dfont;
@@ -273,7 +270,6 @@ module game_core (
             4'd4: dfont = 15'b101_101_111_001_001; 4'd5: dfont = 15'b111_100_111_001_111;
             4'd6: dfont = 15'b111_100_111_101_111; 4'd7: dfont = 15'b111_001_001_001_001;
             4'd8: dfont = 15'b111_101_111_101_111; 4'd9: dfont = 15'b111_101_111_001_111;
-            4'd10:dfont = 15'b000_010_000_010_000; 4'd11:dfont= 15'b010_100_100_100_010;
             default: dfont = 15'b0;
         endcase
     end
@@ -291,10 +287,9 @@ module game_core (
     wire [4:0] dx = x[4:0] - ((in_tens || in_ones) ? 5'd4 : 5'd16);
     wire lit = (dx[4:3] == 2'd0) ? drow[2] : (dx[4:3] == 2'd1) ? drow[1] : (dx[4:3] == 2'd2) ? drow[0] : 1'b0;
 
-    wire draw_sad    = in_sad && lit;
     wire score_hit   = lit && (((score_tens   != 4'd0) && in_tens)   || in_ones);
     wire h_score_hit = lit && (((h_score_tens != 4'd0) && in_h_tens) || in_h_ones);
-    wire any_text    = draw_sad | score_hit | h_score_hit;
+    wire any_text    = score_hit | h_score_hit;
 
     // 9. Colours
     reg [5:0] bird_rgb;
@@ -308,7 +303,7 @@ module game_core (
 
     wire [5:0] bg_color   = invert_mode ? 6'b00_00_00 : 6'b00_10_11;
     wire [5:0] pipe_color = invert_mode ? 6'b11_11_11 : 6'b00_11_00;
-    wire [5:0] text_color = (h_score_hit && !draw_sad && !score_hit) ? 6'b11_10_00 : 6'b11_11_11;
+    wire [5:0] text_color = (h_score_hit && !score_hit) ? 6'b11_10_00 : 6'b11_11_11;
 
     assign rgb = !active   ? 6'b00_00_00 :
                  any_text  ? text_color  :
@@ -323,7 +318,8 @@ module game_core (
     reg [2:0]  step;
     reg        game_over_last, tens_inc, h_score_beaten;
 
-    wire last_index = (index == 4'd2) || (index == 4'd6) || (index == 4'd10);
+    // Removed indices 8, 9, 10 for massive logic savings. Index 7 is the crash stop.
+    wire last_index = (index == 4'd2) || (index == 4'd6) || (index == 4'd7);
 
     // Audio Sequence - Logic Minimized
     reg [15:0] hp_m1;
@@ -333,9 +329,8 @@ module game_core (
             4'd0: {hp_m1, length_m1} = {16'd35815, 3'd0}; 4'd1: {hp_m1, length_m1} = {16'd40191, 3'd0};
             4'd2: {hp_m1, length_m1} = {16'd42661, 3'd1}; 4'd3: {hp_m1, length_m1} = {16'd23899, 3'd1};
             4'd4: {hp_m1, length_m1} = {16'd18967, 3'd1}; 4'd5: {hp_m1, length_m1} = {16'd15942, 3'd1};
-            4'd6: {hp_m1, length_m1} = {16'd11949, 3'd5}; 4'd7: {hp_m1, length_m1} = {16'd35815, 3'd3};
-            4'd8: {hp_m1, length_m1} = {16'd37992, 3'd3}; 4'd9: {hp_m1, length_m1} = {16'd40191, 3'd3};
-            default: {hp_m1, length_m1} = {16'd42661, 3'd7};
+            4'd6: {hp_m1, length_m1} = {16'd11949, 3'd5};
+            default: {hp_m1, length_m1} = {16'd42661, 3'd7}; // Index 7 (Crash single note)
         endcase
     end
 
