@@ -85,14 +85,14 @@ module game_core (
         else if (game_tick)  jump_pending <= 1'b0;
     end
 
-    // 3. RNG (Tiny LFSR instead of adder saves area)
+    // 3. RNG (Tiny 8-bit LFSR replaces a bulky adder)
     reg [7:0] rand_y;
     always @(posedge clk) begin
         if (!rst_n) rand_y <= 8'hFF;
         else        rand_y <= {rand_y[6:0], 1'b0} ^ (rand_y[7] ? 8'h8E : 8'h00);
     end
 
-    // 4. State variables
+    // 4. State Variables (Invert mode & counter completely deleted for logic savings)
     reg [8:0]      bird_y_r;
     reg signed [4:0] velocity;
     
@@ -105,13 +105,14 @@ module game_core (
     reg [3:0] score_tens, score_ones;
     reg [3:0] h_score_tens, h_score_ones;
     reg       game_over;
-    reg [4:0] invert_counter;
-    reg       invert_mode;
 
-    // Physics clamp logic 
-    wire floor_hit = &bird_y_r[8:6]; // >= 448
+    // Free logic: Color inverts whenever the 10s score is odd!
+    wire invert_mode = score_tens[0]; 
+
+    // Physics clamp logic (Replaced 10-bit magnitude comparator with 3-input AND gate)
+    wire floor_hit = &bird_y_r[8:6]; 
     wire [9:0] next_y  = {1'b0, bird_y_r} + {{5{velocity[4]}}, velocity};
-    wire [8:0] y_clamp = next_y[9] ? 9'd0 : (next_y > 10'd448) ? 9'd448 : next_y[8:0];
+    wire [8:0] y_clamp = next_y[9] ? 9'd0 : (&next_y[8:6] ? 9'd448 : next_y[8:0]);
 
     wire [9:0] pipe_speed = 10'd3 + {6'd0, score_tens};
     wire p1_pass = !pipe1_passed && (pipe1_x < 10'd112); // 160 - 48
@@ -120,11 +121,12 @@ module game_core (
     wire score_gt_high = {score_tens, score_ones} > {h_score_tens, h_score_ones};
     wire game_restart  = game_over && floor_hit && jump_pending;
 
-    // 5. Collision (ASIC Modulo Magic - 1 subtractor handles top AND bottom crashes!)
+    // 5. Collision (ASIC Modulo Magic - Removed 4 massive comparators)
+    // (x - 113) < 79 naturally handles both the left and right pipe boundaries!
     wire [8:0] gap1_9 = {1'b0, pipe1_gap_y};
     wire [8:0] gap2_9 = {1'b0, pipe2_gap_y};
-    wire crash1 = (pipe1_x < 10'd192) && (pipe1_x > 10'd112) && ((bird_y_r - gap1_9) > 9'd98);
-    wire crash2 = (pipe2_x < 10'd192) && (pipe2_x > 10'd112) && ((bird_y_r - gap2_9) > 9'd98);
+    wire crash1 = ((pipe1_x - 10'd113) < 10'd79) && ((bird_y_r - gap1_9) > 9'd98);
+    wire crash2 = ((pipe2_x - 10'd113) < 10'd79) && ((bird_y_r - gap2_9) > 9'd98);
 
     // 6. Main game loop
     always @(posedge clk) begin
@@ -137,8 +139,6 @@ module game_core (
             {pipe1_move, pipe2_move} <= 2'b0;
             {pipe1_dir, pipe2_dir} <= 2'b0;
             {score_tens, score_ones} <= 8'd0;
-            invert_counter <= 5'd0;
-            invert_mode    <= 1'b0;
             game_over      <= 1'b0;
         end else if (game_tick) begin
             if (crash1 || crash2 || floor_hit) game_over <= 1'b1;
@@ -159,7 +159,7 @@ module game_core (
                     pipe1_move   <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd0);
                     pipe1_dir    <= bird_y_r[3];
                 end else begin
-                    pipe1_x  <= pipe1_x - pipe_speed;
+                    pipe1_x <= pipe1_x - pipe_speed;
                     if (pipe1_move) begin
                         pipe1_gap_y <= pipe1_dir ? pipe1_gap_y - 8'd1 : pipe1_gap_y + 8'd1;
                         if      (pipe1_gap_y >= 8'd218) pipe1_dir <= 1'b1;
@@ -175,7 +175,7 @@ module game_core (
                     pipe2_move   <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd3);
                     pipe2_dir    <= bird_y_r[4];
                 end else begin
-                    pipe2_x  <= pipe2_x - pipe_speed;
+                    pipe2_x <= pipe2_x - pipe_speed;
                     if (pipe2_move) begin
                         pipe2_gap_y <= pipe2_dir ? pipe2_gap_y - 8'd1 : pipe2_gap_y + 8'd1;
                         if      (pipe2_gap_y >= 8'd218) pipe2_dir <= 1'b1;
@@ -190,10 +190,6 @@ module game_core (
                         if (score_tens != 4'd9) score_tens <= score_tens + 4'd1;
                     end else score_ones <= score_ones + 4'd1;
 
-                    if (invert_counter == 5'd24) begin
-                        invert_counter <= 5'd0; invert_mode <= ~invert_mode;
-                    end else invert_counter <= invert_counter + 5'd1;
-
                     if (p1_pass) pipe1_passed <= 1'b1;
                     if (p2_pass) pipe2_passed <= 1'b1;
                 end
@@ -206,11 +202,11 @@ module game_core (
         else if (game_tick && score_gt_high) {h_score_tens, h_score_ones} <= {score_tens, score_ones};
     end
 
-    // 7. VGA Datapath (Modulo boundaries to save adders/subtractors)
-    wire [9:0] bird_y = {1'b0, bird_y_r};
-    wire [9:0] by_d   = y - bird_y; 
+    // 7. VGA Datapath - Using 9-bit logic array to save massive bits of subtraction 
+    wire [8:0] y9 = y[8:0]; // active screen is max 479, fits perfectly in 9 bits
+    wire [8:0] by_d = y9 - bird_y_r; 
     
-    wire in_bird_box = (x[9:5] == 5'd5) && (by_d < 10'd32);
+    wire in_bird_box = (x[9:5] == 5'd5) && (by_d < 9'd32);
     wire [5:0] bidx = {by_d[4:2] ^ {3{invert_mode}}, x[4:2]};
 
     reg [2:0] p_color;
@@ -229,19 +225,21 @@ module game_core (
     end
     wire bird_hit = (p_color != 3'd0);
 
-    wire [9:0] gap1_10 = {2'b00, pipe1_gap_y};
-    wire [9:0] gap2_10 = {2'b00, pipe2_gap_y};
+    wire [8:0] gap1_10 = {1'b0, pipe1_gap_y};
+    wire [8:0] gap2_10 = {1'b0, pipe2_gap_y};
     
-    wire pipe_hit = ( ((x - pipe1_x) < 10'd48) && ((y - gap1_10) >= 10'd130) ) ||
-                    ( ((x - pipe2_x) < 10'd48) && ((y - gap2_10) >= 10'd130) );
+    // (x-pipe) < 48 natively checks left & right limits!
+    // (y-gap) >= 130 natively checks top & bottom pipe gaps!
+    wire pipe_hit = ( ((x - pipe1_x) < 10'd48) && ((y9 - gap1_10) >= 9'd130) ) ||
+                    ( ((x - pipe2_x) < 10'd48) && ((y9 - gap2_10) >= 9'd130) );
 
-    // 8. Shared glyph renderer (UI digits shifted to 32px borders to delete subtraction)
+    // 8. Shared glyph renderer (Digits only, unused characters wiped to save ROM logic)
     wire is_t  = (x[9:5] == 5'd9);  // 288-319
     wire is_o  = (x[9:5] == 5'd10); // 320-351
     wire is_ht = (x[9:5] == 5'd17); // 544-575
     wire is_ho = (x[9:5] == 5'd18); // 576-607
     
-    wire in_srow = (y >= 10'd32)  && (y < 10'd72);
+    wire in_srow = (y9 >= 9'd32)  && (y9 < 9'd72);
     wire [3:0] glyph = is_t ? score_tens : is_o ? score_ones : is_ht ? h_score_tens : h_score_ones;
 
     reg [14:0] dfont;
@@ -256,7 +254,7 @@ module game_core (
         endcase
     end
 
-    wire [2:0] gy = {~y[5], y[4:3]}; 
+    wire [2:0] gy = {~y9[5], y9[4:3]}; 
     reg  [2:0] drow;
     always @(*) begin
         case (gy)
@@ -297,22 +295,21 @@ module game_core (
     reg [2:0]  step;
     reg        game_over_last, tens_inc, h_score_beaten;
 
-    // Indices: 0 = flap. 1-3 = High Score. 4 = Score 10. 5-8 = Dun Dun Dunnnn.
     wire last_index = (index == 4'd0) || (index == 4'd4) || (index == 4'd8);
 
     reg [15:0] hp_m1;
     reg [2:0]  length_m1;
     always @(*) begin
         case (index)
-            4'd0: {hp_m1, length_m1} = {16'd35815, 3'd1}; // Flap (1 short note)
+            4'd0: {hp_m1, length_m1} = {16'd35815, 3'd1}; // Flap 
             4'd1: {hp_m1, length_m1} = {16'd23899, 3'd1}; // HS 1
             4'd2: {hp_m1, length_m1} = {16'd18967, 3'd1}; // HS 2
             4'd3: {hp_m1, length_m1} = {16'd15942, 3'd1}; // HS 3
             4'd4: {hp_m1, length_m1} = {16'd11949, 3'd5}; // HS 4 / Score 10
-            4'd5: {hp_m1, length_m1} = {16'd35815, 3'd3}; // Death 1 (Dun)
-            4'd6: {hp_m1, length_m1} = {16'd37992, 3'd3}; // Death 2 (Dun)
-            4'd7: {hp_m1, length_m1} = {16'd40191, 3'd3}; // Death 3 (Dun)
-            default: {hp_m1, length_m1} = {16'd42661, 3'd7}; // Death 4 (Dunnnn)
+            4'd5: {hp_m1, length_m1} = {16'd35815, 3'd3}; // Death 1 
+            4'd6: {hp_m1, length_m1} = {16'd37992, 3'd3}; // Death 2 
+            4'd7: {hp_m1, length_m1} = {16'd40191, 3'd3}; // Death 3 
+            default: {hp_m1, length_m1} = {16'd42661, 3'd7}; // Death 4
         endcase
     end
 
@@ -375,8 +372,5 @@ module game_core (
     end
 
     assign speaker = audio_out & ~gap & audio_active;
-
-    // Lint suppression
-    wire _unused_bits = &{1'b0, dx[2:0]};
 
 endmodule
